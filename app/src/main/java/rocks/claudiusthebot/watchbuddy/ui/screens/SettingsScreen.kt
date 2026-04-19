@@ -55,6 +55,9 @@ fun SettingsScreen(
         SettingsRow("ascii pet", "→ ${ui.buddySpecies + 1}") {
             store.setSpecies((ui.buddySpecies + 1) % 3)
         }
+        SettingsRow("restart ble", "↻") {
+            rocks.claudiusthebot.watchbuddy.ble.BuddyBleService.instance?.restart()
+        }
         SettingsRow("reset stats", "") {
             store.clearAllStats()
         }

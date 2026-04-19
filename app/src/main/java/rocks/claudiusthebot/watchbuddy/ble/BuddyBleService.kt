@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import rocks.claudiusthebot.watchbuddy.MainActivity
@@ -64,6 +65,8 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
     private var txChar: BluetoothGattCharacteristic? = null
     private var rxChar: BluetoothGattCharacteristic? = null
 
+    private var savedAdapterName: String? = null
+
     // subscribers get notify packets; usually just one at a time (the desktop)
     private val subscribers = HashSet<String>()
     private var connectedDevice: BluetoothDevice? = null
@@ -83,7 +86,7 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
         store = BuddyStore.get(this)
         protocol = BuddyProtocol(this)
         startForegroundWithNotif()
-        startBle()
+        scope.launch { startBle() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -93,6 +96,7 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
     override fun onDestroy() {
         super.onDestroy()
         stopBle()
+        restoreAdapterName()
         scope.cancel()
         if (instance === this) instance = null
     }
@@ -102,23 +106,40 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
     // ------------------------------------------------------------
 
     @SuppressLint("MissingPermission")
-    private fun startBle() {
+    private suspend fun startBle() {
         btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val adapter: BluetoothAdapter? = btManager?.adapter
         if (adapter == null) {
             Log.e(TAG, "no Bluetooth adapter")
+            store.update { it.copy(advertisingError = "no Bluetooth adapter") }
+            return
+        }
+        val missing = missingBlePermissions()
+        if (missing.isNotEmpty()) {
+            Log.e(TAG, "missing permissions: $missing")
+            store.update { it.copy(missingPermissions = missing,
+                advertisingError = "missing permissions") }
             return
         }
         if (!adapter.isEnabled) {
             Log.w(TAG, "Bluetooth is disabled")
-            // We don't force-enable — user must toggle it. Service keeps running.
-        }
-        if (!hasBlePermissions()) {
-            Log.e(TAG, "missing BLE runtime permissions — waiting for user to grant")
+            store.update { it.copy(btEnabled = false,
+                advertisingError = "Bluetooth is off") }
             return
         }
+        store.update { it.copy(btEnabled = true, missingPermissions = emptyList()) }
 
-        adapter.name = store.state.value.deviceName
+        // Save current adapter name so we can restore it on shutdown.
+        if (savedAdapterName == null) savedAdapterName = adapter.name
+
+        // Apply our "Claude-XXXX" name to the GAP layer.
+        val wantName = store.state.value.deviceName
+        if (adapter.name != wantName) {
+            adapter.name = wantName
+            // Name changes are async through the bluetooth stack — give it a tick
+            // before we advertise, or the first broadcast will use the old name.
+            delay(450)
+        }
 
         gattServer = btManager?.openGattServer(this, gattCallback)
         gattServer?.clearServices()
@@ -152,25 +173,49 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
         gattServer?.addService(service)
 
         advertiser = adapter.bluetoothLeAdvertiser
+        if (advertiser == null) {
+            Log.e(TAG, "adapter has no BluetoothLeAdvertiser — peripheral mode not supported")
+            store.update { it.copy(advertisingError = "peripheral mode not supported") }
+            return
+        }
         startAdvertising()
     }
 
     @SuppressLint("MissingPermission")
     private fun startAdvertising() {
         val adv = advertiser ?: return
+
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .setTimeout(0)
             .build()
 
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
+        // Primary advertisement packet — room is tight (31 bytes total):
+        //   flags (3) + service UUID 128-bit (18) = 21 bytes → 10 bytes free.
+        // We do NOT include the device name here; it would overflow and the
+        // whole advertisement gets silently dropped by the OS.
+        val advData = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
             .addServiceUuid(ParcelUuid(NusConstants.SERVICE))
             .build()
 
-        adv.startAdvertising(settings, data, advertiseCallback)
+        // Scan response packet — separate 31 bytes the central pulls on scan.
+        // Device name lives here so the Claude desktop's "starts with Claude"
+        // filter still sees "Claude-XXXX" when combining adv + scan-rsp.
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .build()
+
+        try {
+            adv.startAdvertising(settings, advData, scanResponse, advertiseCallback)
+        } catch (e: Exception) {
+            Log.e(TAG, "startAdvertising threw", e)
+            store.update { it.copy(advertising = false,
+                advertisingError = "advertise threw: ${e.message}") }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -178,14 +223,32 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
         try { advertiser?.stopAdvertising(advertiseCallback) } catch (_: Exception) {}
         try { gattServer?.close() } catch (_: Exception) {}
         gattServer = null
+        store.update { it.copy(advertising = false) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun restoreAdapterName() {
+        val old = savedAdapterName ?: return
+        val adapter = btManager?.adapter ?: return
+        try { adapter.name = old } catch (_: Exception) {}
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            Log.i(TAG, "advertising started")
+            Log.i(TAG, "advertising started: $settingsInEffect")
+            store.update { it.copy(advertising = true, advertisingError = null) }
         }
         override fun onStartFailure(errorCode: Int) {
-            Log.e(TAG, "advertising failed err=$errorCode")
+            val reason = when (errorCode) {
+                ADVERTISE_FAILED_DATA_TOO_LARGE -> "data too large (>31 bytes)"
+                ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "too many advertisers"
+                ADVERTISE_FAILED_ALREADY_STARTED -> "already started"
+                ADVERTISE_FAILED_INTERNAL_ERROR -> "internal error"
+                ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "feature unsupported"
+                else -> "err $errorCode"
+            }
+            Log.e(TAG, "advertising failed: $reason")
+            store.update { it.copy(advertising = false, advertisingError = reason) }
         }
     }
 
@@ -211,11 +274,14 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
                     store.setConnected(false)
                     updateNotif(connected = false, attention = false)
                     // restart advertising so a fresh connect is possible
-                    try {
-                        advertiser?.stopAdvertising(advertiseCallback)
-                        startAdvertising()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "restart advertise err", e)
+                    scope.launch {
+                        try {
+                            advertiser?.stopAdvertising(advertiseCallback)
+                            delay(200)
+                            startAdvertising()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "restart advertise err", e)
+                        }
                     }
                 }
             }
@@ -289,7 +355,6 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
     }
 
     override fun onTime(epochSec: Long, tzOffsetSec: Int) {
-        // Android has its own system clock — just log it.
         Log.d(TAG, "time sync epoch=$epochSec tz=$tzOffsetSec")
     }
 
@@ -300,14 +365,10 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
 
     override fun onSetName(name: String) {
         store.setName(name)
-        // Adapter name change requires renaming the BluetoothAdapter; already done
-        // on next advertiser restart.
         sendAck("name", true)
     }
 
     override fun onUnpair() {
-        // Android doesn't expose a clean "forget all bonds for this app". We
-        // ack and let the framework handle pairing state per device.
         sendAck("unpair", true)
     }
 
@@ -335,7 +396,6 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
     }
 
     override fun onFile(path: String, size: Long) {
-        // Validate path (no absolute, no ..)
         if (path.startsWith("/") || path.contains("..")) {
             sendAck("file", false, error = "bad path")
             return
@@ -354,7 +414,6 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
             return
         }
         currentFileWritten += bytes.size
-        // We discard the bytes — character packs not supported in v1.
         sendAck("chunk", true, n = currentFileWritten)
     }
 
@@ -391,7 +450,6 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
             val tx = txChar ?: break
             val server = gattServer ?: break
 
-            // Fragment at MTU-3
             val frag = (mtu - 3).coerceAtLeast(20)
             var off = 0
             while (off < next.size) {
@@ -404,8 +462,7 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
                     Log.w(TAG, "notify failed", e)
                 }
                 off = end
-                // small pacing to let the stack breathe
-                kotlinx.coroutines.delay(8)
+                delay(8)
             }
         }
     }
@@ -414,13 +471,9 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
         enqueue(BuddyMessages.ack(cmd, ok, n, error).toByteArray(Charsets.UTF_8))
     }
 
-    /**
-     * Called by the UI when the user taps approve/deny on a pending prompt.
-     */
     fun sendDecision(id: String, decision: String) {
         enqueue(BuddyMessages.permission(id, decision).toByteArray(Charsets.UTF_8))
         if (decision == "once") {
-            // Calculate speed for heart bonus
             val promptedAt = lastPromptAtMs
             val fast = if (promptedAt > 0) System.currentTimeMillis() - promptedAt else Long.MAX_VALUE
             store.recordApproval(fast)
@@ -432,18 +485,28 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
 
     private var lastPromptAtMs: Long = 0L
 
+    /** Kick the adapter name + restart advertising — called when settings change. */
+    fun restart() {
+        scope.launch {
+            stopBle()
+            delay(250)
+            startBle()
+        }
+    }
+
     // ------------------------------------------------------------
     // System helpers
     // ------------------------------------------------------------
 
-    private fun hasBlePermissions(): Boolean {
-        val s = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
-                PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) ==
-                PackageManager.PERMISSION_GRANTED
-        } else true
-        return s
+    private fun missingBlePermissions(): List<String> {
+        val out = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED) out.add("BLUETOOTH_CONNECT")
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
+                != PackageManager.PERMISSION_GRANTED) out.add("BLUETOOTH_ADVERTISE")
+        }
+        return out
     }
 
     private fun getBatteryPct(): Int? {

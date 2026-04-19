@@ -4,16 +4,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -53,8 +56,11 @@ fun InfoScreen(ui: BuddyUiState, onNavigate: (Screen) -> Unit) {
                 )
             }
             Spacer(Modifier.height(6.dp))
-            Row2("connected", if (ui.connected) "yes" else "no")
-            Row2("encrypted", if (ui.encrypted) "yes" else "no")
+
+            // BLE status block — surfaced first so troubleshooting is obvious.
+            BleStatusBlock(ui)
+
+            Spacer(Modifier.height(6.dp))
             Row2("tokens", "${ui.heartbeat.tokens}")
             Row2("today",  "${ui.heartbeat.tokensToday}")
             Row2("running", "${ui.heartbeat.running}")
@@ -68,8 +74,56 @@ fun InfoScreen(ui: BuddyUiState, onNavigate: (Screen) -> Unit) {
 }
 
 @Composable
+private fun BleStatusBlock(ui: BuddyUiState) {
+    val err = ui.advertisingError
+    val missing = ui.missingPermissions
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF111111))
+            .padding(10.dp)
+    ) {
+        Column {
+            Row2("advertising",
+                when {
+                    !ui.btEnabled -> "BT off"
+                    ui.advertising -> "yes"
+                    err != null -> "no"
+                    else -> "…"
+                }
+            )
+            Row2("connected", if (ui.connected) "yes" else "no")
+            Row2("encrypted", if (ui.encrypted) "yes" else "no")
+
+            if (err != null) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = err,
+                    color = Color(0xFFFFAB91),
+                    fontSize = 9.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (missing.isNotEmpty()) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = "grant: " + missing.joinToString(", "),
+                    color = Color(0xFFFFAB91),
+                    fontSize = 9.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun Row2(label: String, value: String) {
-    androidx.compose.foundation.layout.Row(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 1.dp)

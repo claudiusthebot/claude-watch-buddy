@@ -31,5 +31,10 @@ data class BuddyUiState(
     val heartbeat: Heartbeat = Heartbeat(),
     val screen: Screen = Screen.NORMAL,
     val stats: Stats = Stats(),
-    val lastEventMs: Long = 0L
+    val lastEventMs: Long = 0L,
+    // BLE status — surfaced on the Info screen so the user can tell what's wrong
+    val advertising: Boolean = false,
+    val advertisingError: String? = null,
+    val btEnabled: Boolean = true,
+    val missingPermissions: List<String> = emptyList()
 )
