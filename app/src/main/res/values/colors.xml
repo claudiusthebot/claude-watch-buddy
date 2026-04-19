@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#FF000000</color>
+    <color name="fg">#FFFFFFFF</color>
+    <color name="fg_dim">#FF808080</color>
+    <color name="accent">#FFD97757</color>
+    <color name="approve">#FF4CAF50</color>
+    <color name="deny">#FFF44336</color>
+    <color name="attention">#FFF44336</color>
+</resources>

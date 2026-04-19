@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Claude Buddy</string>
+    <string name="channel_ble">Buddy BLE bridge</string>
+    <string name="notif_title">Claude Buddy</string>
+    <string name="notif_idle">Waiting for Claude…</string>
+    <string name="notif_connected">Connected to Claude</string>
+    <string name="notif_attention">Approval pending</string>
+</resources>
