@@ -78,6 +78,16 @@ class BuddyStore(private val appContext: Context) {
         recomputeState()
     }
 
+    /** Called when a conversation turn completes. Updates NormalScreen snippet. */
+    fun onTurnEvent(role: String, text: String) {
+        update {
+            it.copy(
+                lastTurn = LastTurn(role, text),
+                lastEventMs = System.currentTimeMillis()
+            )
+        }
+    }
+
     fun setScreen(screen: Screen) {
         update { it.copy(screen = screen) }
     }
