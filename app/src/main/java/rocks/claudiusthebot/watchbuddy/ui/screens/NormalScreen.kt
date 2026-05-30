@@ -96,13 +96,16 @@ fun NormalScreen(ui: BuddyUiState, onNavigate: (Screen) -> Unit) {
                 )
             }
 
-            // transcript
-            if (ui.heartbeat.entries.isNotEmpty()) {
+            // Last conversation snippet — prefers real-time turn event over
+            // periodic heartbeat entries snapshot. Shows what Claude most recently
+            // said or did (tool calls shown as [tool_name]).
+            val snippet = ui.lastTurn?.text
+                ?: ui.heartbeat.entries.firstOrNull()?.takeIf { it.isNotBlank() }
+            if (snippet != null) {
                 Spacer(Modifier.height(4.dp))
-                val first = ui.heartbeat.entries.firstOrNull().orEmpty()
                 Text(
-                    text = first,
-                    color = Color(0xFF999999),
+                    text = snippet,
+                    color = Color(0xFF888888),
                     fontSize = 9.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
