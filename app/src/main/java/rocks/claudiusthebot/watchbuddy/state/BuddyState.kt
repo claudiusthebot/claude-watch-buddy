@@ -20,6 +20,15 @@ data class Stats(
     fun level(tokens: Long): Int = (tokens / 50_000L).toInt()
 }
 
+/**
+ * Last completed conversation turn from the desktop.
+ * Updated in real-time via turn events (role=assistant or user).
+ */
+data class LastTurn(
+    val role: String,   // "assistant" or "user"
+    val text: String    // extracted text (tool names for tool_use blocks)
+)
+
 /** Full UI state the Compose layer observes. */
 data class BuddyUiState(
     val connected: Boolean = false,
@@ -32,6 +41,7 @@ data class BuddyUiState(
     val screen: Screen = Screen.NORMAL,
     val stats: Stats = Stats(),
     val lastEventMs: Long = 0L,
+    val lastTurn: LastTurn? = null,
     // BLE status — surfaced on the Info screen so the user can tell what's wrong
     val advertising: Boolean = false,
     val advertisingError: String? = null,
