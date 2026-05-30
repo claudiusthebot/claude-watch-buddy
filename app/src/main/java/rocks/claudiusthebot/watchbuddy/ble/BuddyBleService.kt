@@ -351,7 +351,28 @@ class BuddyBleService : Service(), BuddyProtocol.Listener {
     }
 
     override fun onTurnEvent(role: String, content: JSONArray) {
-        // Noop for now — could surface summaries on screen.
+        // Extract displayable text from the content blocks.
+        // text blocks → concatenate; tool_use blocks → "[tool_name]" indicator.
+        val text = buildString {
+            for (i in 0 until content.length()) {
+                val block = content.optJSONObject(i) ?: continue
+                when (block.optString("type")) {
+                    "text" -> {
+                        val t = block.optString("text", "").trim()
+                        if (t.isNotEmpty()) {
+                            if (isNotEmpty()) append(" ")
+                            append(t)
+                        }
+                    }
+                    "tool_use" -> {
+                        val name = block.optString("name", "tool")
+                        if (isNotEmpty()) append(" ")
+                        append("[$name]")
+                    }
+                }
+            }
+        }.take(120)
+        if (text.isNotEmpty()) store.onTurnEvent(role, text)
     }
 
     override fun onTime(epochSec: Long, tzOffsetSec: Int) {
